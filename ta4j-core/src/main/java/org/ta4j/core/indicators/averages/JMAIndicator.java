@@ -27,7 +27,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import org.ta4j.core.Indicator;
-import org.ta4j.core.indicators.CachedIndicator;
+import org.ta4j.core.indicators.RecursiveCachedIndicator;
 import org.ta4j.core.num.Num;
 import org.ta4j.core.num.NumFactory;
 
@@ -41,7 +41,7 @@ import org.ta4j.core.num.NumFactory;
  * those averages.
  *
  */
-public class JMAIndicator extends CachedIndicator<Num> {
+public class JMAIndicator extends RecursiveCachedIndicator<Num> {
 
     private final Indicator<Num> indicator; // Base indicator (e.g., Close Price)
     private final int barCount; // Period for the JMA calculation
@@ -52,6 +52,9 @@ public class JMAIndicator extends CachedIndicator<Num> {
     private final Num beta;
     private final Num phaseRatio;
     private final Num alpha;
+    private final Indicator<Num> e0Indicator;
+    private final Indicator<Num> e1Indicator;
+    private final Indicator<Num> e2Indicator;
 
     /**
      * Constructor.
@@ -81,6 +84,80 @@ public class JMAIndicator extends CachedIndicator<Num> {
 
         alpha = beta.pow(this.power);
 
+        this.e0Indicator = new RecursiveCachedIndicator<Num>(indicator) {
+
+            @Override
+            protected Num calculate(int index) {
+                if (index <= 0) {
+                    return numFactory.zero();
+                }
+
+                Num currentPrice = indicator.getValue(index);
+                // Get the previous e0 value
+                Num previousE0 = getValue(index - 1);
+
+                Num e0 = currentPrice.multipliedBy(numFactory.one().minus(alpha)).plus(previousE0.multipliedBy(alpha));
+
+                return e0;
+            }
+
+            @Override
+            public int getCountOfUnstableBars() {
+                return 0;
+            }
+        };
+
+        this.e1Indicator = new RecursiveCachedIndicator<Num>(indicator) {
+
+            @Override
+            protected Num calculate(int index) {
+                if (index <= 0) {
+                    return numFactory.zero();
+                }
+
+                Num currentPrice = indicator.getValue(index);
+                // Get the previous e0 value
+                Num previousE1 = getValue(index - 1);
+
+                Num e1 = currentPrice.minus(JMAIndicator.this.e0Indicator.getValue(index))
+                        .multipliedBy(numFactory.one().minus(beta))
+                        .plus(previousE1.multipliedBy(beta));
+
+                return e1;
+            }
+
+            @Override
+            public int getCountOfUnstableBars() {
+                return 0;
+            }
+        };
+
+        this.e2Indicator = new RecursiveCachedIndicator<Num>(indicator) {
+
+            @Override
+            protected Num calculate(int index) {
+                if (index <= 0) {
+                    return numFactory.zero();
+                }
+
+                // Get the previous e0 value
+                Num previousE2 = getValue(index - 1);
+
+                Num e2 = JMAIndicator.this.e0Indicator.getValue(index)
+                        .plus(phaseRatio.multipliedBy(JMAIndicator.this.e1Indicator.getValue(index)))
+                        .minus(JMAIndicator.this.getValue(index))
+                        .multipliedBy(numFactory.one().minus(alpha).pow(2))
+                        .plus(previousE2.multipliedBy(alpha.pow(2)));
+
+                return e2;
+            }
+
+            @Override
+            public int getCountOfUnstableBars() {
+                return 0;
+            }
+        };
+
         for (int i = indicator.getBarSeries().getBeginIndex(); i < indicator.getBarSeries().getBarCount(); i++) {
             calculate(i);
         }
@@ -100,9 +177,14 @@ public class JMAIndicator extends CachedIndicator<Num> {
 
         JmaData previousJMA = jmaDataMap.get(index - 1);
 
-        Num e0 = calculateE0(numFactory, currentPrice, previousJMA);
-        Num e1 = calculateE1(numFactory, currentPrice, previousJMA, e0);
-        Num e2 = calculateE2(numFactory, previousJMA, e0, e1);
+        Num e0a = calculateE0(numFactory, currentPrice, previousJMA);
+        Num e0 = e0Indicator.getValue(index);
+
+        Num e1a = calculateE1(numFactory, currentPrice, previousJMA, e0);
+        Num e1 = e1Indicator.getValue(index);
+
+		// Num e2 = calculateE2(numFactory, previousJMA, e0, e1);
+        Num e2 = e2Indicator.getValue(index);
 
         Num jma = previousJMA.jma.plus(e2);
 
